@@ -1,17 +1,24 @@
 // ============================================================
-// Study Planner — popup.js (v0.2: entry cards)
+// Study Planner — popup.js (v0.3: saved to chrome.storage.local)
 // ============================================================
 // STATE is the source of truth; render() projects it onto the DOM.
-// A card has two modes:
-//   view  -> text + delete button, click anywhere to edit
-//   edit  -> textarea + Save (amber border)
-// Only one card can be in edit mode at a time: editingId.
+// Every change to state is mirrored into chrome.storage.local, and
+// on open we load from storage BEFORE the first render.
+//
+// Storage keys (separate because they change at different speeds):
+//   entries -> [{ id, text }]   saved on add / save / delete
+//   draft   -> { id, text }     saved on every keystroke while editing
+//
+// The draft key is what makes this safe: a popup closes the instant
+// you click outside it, and there is no reliable "about to close"
+// event to save on. So we never wait for one. The draft is already
+// on disk, and reopening puts you back inside the card, mid-sentence.
 // ============================================================
 
 // ---------- State ----------
-const entries = [];      // [{ id: number, text: string }]
-let nextId = 1;
-let editingId = null;    // id of the card currently in edit mode, or null
+const entries = [];      // [{ id: string, text: string }]
+let editingId = null;    // id of the card in edit mode, or null
+let draftText = "";      // live contents of the open editor
 
 // ---------- DOM references ----------
 const listEl    = document.getElementById("list");
@@ -25,38 +32,91 @@ const removeEntry = (id) => {
   if (i !== -1) entries.splice(i, 1);
 };
 
+// ---------- Storage ----------
+
+async function saveEntries() {
+  try {
+    await chrome.storage.local.set({ entries });
+  } catch (err) {
+    console.error("Couldn't save entries:", err);
+  }
+}
+
+async function saveDraft() {
+  try {
+    if (editingId === null) await chrome.storage.local.remove("draft");
+    else await chrome.storage.local.set({ draft: { id: editingId, text: draftText } });
+  } catch (err) {
+    console.error("Couldn't save draft:", err);
+  }
+}
+
+async function load() {
+  let saved = [];
+  let draft = null;
+  try {
+    ({ entries: saved = [], draft = null } = await chrome.storage.local.get(["entries", "draft"]));
+  } catch (err) {
+    console.error("Couldn't load entries:", err);
+  }
+
+  // Never trust storage blindly: keep only well-formed entries,
+  // and drop blank cards unless they're the one being drafted.
+  if (Array.isArray(saved)) {
+    for (const e of saved) {
+      const wellFormed = e && typeof e.id === "string" && typeof e.text === "string";
+      if (wellFormed && (e.text !== "" || e.id === draft?.id)) entries.push(e);
+    }
+  }
+
+  // Reopen the editor exactly where you left it
+  if (draft && typeof draft.text === "string" && findEntry(draft.id)) {
+    editingId = draft.id;
+    draftText = draft.text;
+  }
+}
+
 // ---------- Actions ----------
 
-// Pull the draft out of the open editor and write it to state.
-// Rules for an empty draft:
+// Write the open draft into state.
+// Empty draft rules:
 //   - brand-new card (never saved)  -> discard it, no ghost cards
 //   - existing card cleared out     -> revert to its old text
-//     (deleting is the × button's job, not the Save button's)
 function commitEdit() {
   if (editingId === null) return;
 
   const entry = findEntry(editingId);
-  const input = listEl.querySelector(".q-input");
-  const draft = input ? input.value.trim() : "";
+  const text = draftText.trim();
 
   if (entry) {
-    if (draft !== "")           entry.text = draft;
+    if (text !== "")            entry.text = text;
     else if (entry.text === "") removeEntry(entry.id);
   }
+
   editingId = null;
+  draftText = "";
+  saveEntries();
+  saveDraft();
 }
 
 function addEntry() {
-  commitEdit();                        // don't lose whatever's being typed
-  const entry = { id: nextId++, text: "" };
+  commitEdit();
+  const entry = { id: crypto.randomUUID(), text: "" };
   entries.unshift(entry);              // newest on top, right under the + button
   editingId = entry.id;
+  draftText = "";
+  saveEntries();
+  saveDraft();
   render();
 }
 
 function startEdit(id) {
   commitEdit();
+  const entry = findEntry(id);
+  if (!entry) return render();
   editingId = id;
+  draftText = entry.text;
+  saveDraft();
   render();
 }
 
@@ -68,6 +128,7 @@ function saveEdit() {
 function deleteEntry(id) {
   commitEdit();
   removeEntry(id);
+  saveEntries();
   render();
 }
 
@@ -105,7 +166,7 @@ function buildEditCard(entry) {
   const input = document.createElement("textarea");
   input.className = "q-input";
   input.placeholder = "What are you studying?";
-  input.value = entry.text;
+  input.value = draftText;             // the draft, not entry.text
   input.rows = 2;
 
   const hint = document.createElement("div");
@@ -135,10 +196,9 @@ function render() {
     listEl.append(entry.id === editingId ? buildEditCard(entry) : buildViewCard(entry));
   }
 
-  const n = entries.length;
+  const n = entries.filter((e) => e.text !== "").length;
   headingEl.textContent = n === 0 ? "Study planner" : `Study planner (${n})`;
 
-  // Put the cursor at the end of the open editor
   const input = listEl.querySelector(".q-input");
   if (input) {
     input.focus();
@@ -151,21 +211,27 @@ function render() {
 
 addBtn.addEventListener("click", addEntry);
 
-// One delegated click handler for every card.
-// Order matters: specific targets (buttons) before the general one (card).
+// One delegated click handler; specific targets before the general one.
 listEl.addEventListener("click", (e) => {
   const card = e.target.closest(".card");
   if (!card) return;
-  const id = Number(card.dataset.id);
+  const id = card.dataset.id;
 
   if (e.target.closest(".del-btn"))  return deleteEntry(id);
   if (e.target.closest(".save-btn")) return saveEdit();
-  if (card.classList.contains("editing")) return;  // clicks inside the editor are for typing
+  if (card.classList.contains("editing")) return;
   startEdit(id);
 });
 
-// Enter saves; Shift+Enter falls through to a normal newline.
-// isComposing guard: don't hijack Enter while an IME (e.g. Korean) is mid-syllable.
+// Every keystroke goes to state AND to disk. No re-render,
+// so the cursor stays put.
+listEl.addEventListener("input", (e) => {
+  if (!e.target.matches(".q-input")) return;
+  draftText = e.target.value;
+  saveDraft();
+});
+
+// Enter saves; Shift+Enter is a newline; IME composition is left alone.
 listEl.addEventListener("keydown", (e) => {
   if (!e.target.matches(".q-input")) return;
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -175,4 +241,10 @@ listEl.addEventListener("keydown", (e) => {
 });
 
 // ---------- Boot ----------
-render();
+// Load first, render second: no flash of "Nothing planned yet"
+// while storage is still answering.
+addBtn.disabled = true;
+load().then(() => {
+  addBtn.disabled = false;
+  render();
+});

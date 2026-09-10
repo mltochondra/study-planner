@@ -1,8 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Study Planner",
-  "version": "0.1.0",
-  "description": "Study Aggressively",
+  "version": "0.2.0",
+  "description": "Study Aggressively ",
+  "permissions": ["storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "Study Planner"
