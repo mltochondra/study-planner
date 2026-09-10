@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Study Planner</title>
+  <style>
+    /* ========== Layout shell ==========
+       Fixed height + flex column. #list takes the remaining space and
+       scrolls internally; overflow:hidden on body stops the whole popup
+       from scrolling behind it. Chrome caps popups at 800x600.          */
+
+    body {
+      width: 480px;
+      height: 600px;
+      box-sizing: border-box;
+      margin: 0;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+      background: #101828;
+      color: #f2f4f7;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      margin-bottom: 10px;
+    }
+
+    h1 {
+      margin: 0;
+      margin-right: auto;      /* pushes buttons right without claiming width */
+      font-size: 13px;
+      font-weight: 600;
+      color: #98a2b3;
+    }
+
+    #list {
+      flex: 1;
+      min-height: 0;           /* flex children won't shrink below content without this */
+      overflow-y: auto;
+    }
+
+
+    /* ========== Header buttons ========== */
+
+    .tool-btn {
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #f2f4f7;
+      background: #1d2939;
+      border: 1px solid #344054;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .tool-btn:hover:not(:disabled) { background: #344054; }
+    .tool-btn:disabled { opacity: 0.35; cursor: default; }
+
+    .tool-btn.add {
+      padding: 3px 9px;
+      font-size: 15px;
+      line-height: 1;
+      color: #7cd4fd;
+      border-color: #164e63;
+    }
+
+
+    /* ========== Entry cards ==========
+       Border colour encodes state: blue = resting, amber = being edited. */
+
+    .card {
+      margin-bottom: 8px;
+      padding: 10px 12px;
+      background: #1d2939;
+      border-radius: 8px;
+      border-left: 3px solid #7cd4fd;
+      cursor: pointer;
+    }
+
+    .card.editing { border-left-color: #fdb022; cursor: default; }
+
+    .row { display: flex; align-items: flex-start; gap: 8px; }
+    .row .q { flex: 1; }
+
+    .q {
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.35;
+      white-space: pre-wrap;     /* keep Shift+Enter line breaks */
+      overflow-wrap: anywhere;   /* long URLs don't blow out the card */
+    }
+
+    .hint {
+      margin-top: 6px;
+      font-size: 11px;
+      font-style: italic;
+      color: #667085;
+    }
+
+    .empty {
+      padding: 20px 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #667085;
+      text-align: center;
+    }
+
+
+    /* ========== Card controls ========== */
+
+    .del-btn {
+      flex-shrink: 0;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      font-size: 16px;
+      line-height: 1;
+      color: #667085;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .del-btn:hover { color: #fda29b; background: #101828; }
+
+
+    /* ========== Edit mode ========== */
+
+    .q-input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      min-height: 44px;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      color: #f2f4f7;
+      background: #101828;
+      border: 1px solid #344054;
+      border-radius: 6px;
+      resize: vertical;
+    }
+
+    .q-input:focus { outline: none; border-color: #fdb022; }
+
+    .save-btn {
+      margin-top: 8px;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #101828;
+      background: #7cd4fd;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .save-btn:hover { background: #36bffa; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="heading">Study Planner</h1>
+    <button id="addBtn" class="tool-btn add" type="button"
+            title="Add entry" aria-label="Add entry">+</button>
+  </header>
+
+  <div id="list"></div>
+
+  <!-- MV3 forbids inline scripts, so the logic lives in its own file -->
+  <script src="popup.js"></script>
+</body>
+</html>
