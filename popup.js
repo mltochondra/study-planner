@@ -6,7 +6,8 @@
 // on open we load from storage BEFORE the first render.
 //
 // Storage keys (separate because they change at different speeds):
-//   entries -> [{ id, text, level }]  saved on add / save / delete / level
+//   entries -> [{ id, text, level, createdAt, studiedAt }]
+//                                    saved on add / save / delete / level / study
 //   draft   -> { id, text }           saved on every keystroke while editing
 //
 // The draft key is what makes this safe: a popup closes the instant
@@ -30,6 +31,33 @@ const LEVELS = [
 const DEFAULT_LEVEL = "remember";
 const levelById = new Map(LEVELS.map((l) => [l.id, l]));
 const getLevel  = (id) => levelById.get(id) ?? levelById.get(DEFAULT_LEVEL);
+
+// ---------- Time ----------
+// We store TIMESTAMPS (a moment), never elapsed counters (a duration).
+// A counter would need something running to increment it, and a service
+// worker sleeps after ~30s while a closed browser runs nothing at all.
+// An elapsed time is just Date.now() minus a stored moment, computed at
+// the instant we draw it — so the clock "keeps ticking" with the
+// extension entirely shut down. Wall time does the work; we just read it.
+
+const HOUR = 3600000;
+const DAY  = 86400000;
+
+function formatSpan(ms) {
+  if (!Number.isFinite(ms) || ms < 0) ms = 0;
+  const days  = Math.floor(ms / DAY);
+  const hours = Math.floor((ms % DAY) / HOUR);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h`;
+  return "<1h";
+}
+
+const createdLabel = (entry) => `Created ${formatSpan(Date.now() - entry.createdAt)} ago`;
+
+const elapsedLabel = (entry) =>
+  entry.studiedAt === null
+    ? "Never studied"
+    : `${formatSpan(Date.now() - entry.studiedAt)} elapsed`;
 
 // ---------- State ----------
 const entries = [];      // [{ id: string, text: string, level: string }]
@@ -88,6 +116,11 @@ async function load() {
         id: e.id,
         text: e.text,
         level: levelById.has(e.level) ? e.level : DEFAULT_LEVEL,
+        // Entries saved before timestamps existed get "now" as their
+        // birthday. It's a lie, but it's the only honest guess available,
+        // and it beats rendering "NaNd NaNh ago".
+        createdAt: typeof e.createdAt === "number" ? e.createdAt : Date.now(),
+        studiedAt: typeof e.studiedAt === "number" ? e.studiedAt : null,
       });
     }
   }
@@ -124,7 +157,13 @@ function commitEdit() {
 
 function addEntry() {
   commitEdit();
-  const entry = { id: crypto.randomUUID(), text: "", level: DEFAULT_LEVEL };
+  const entry = {
+    id: crypto.randomUUID(),
+    text: "",
+    level: DEFAULT_LEVEL,
+    createdAt: Date.now(),
+    studiedAt: null,
+  };
   entries.unshift(entry);              // newest on top, right under the + button
   editingId = entry.id;
   draftText = "";
@@ -161,6 +200,18 @@ function setLevel(id, levelId) {
   const entry = findEntry(id);
   if (!entry || !levelById.has(levelId)) return;
   entry.level = levelId;
+  saveEntries();
+  render();
+}
+
+// Deliberately manual: pressing Study stamps "now" and the elapsed
+// read-out restarts from zero. No scheduler, no due dates, no nagging —
+// you look at the number and decide. Like setLevel, this does not
+// commit the open draft.
+function markStudied(id) {
+  const entry = findEntry(id);
+  if (!entry) return;
+  entry.studiedAt = Date.now();
   saveEntries();
   render();
 }
@@ -216,7 +267,32 @@ function buildViewCard(entry) {
   del.setAttribute("aria-label", "Delete entry");
 
   row.append(q, buildLevelPicker(entry), del);
-  card.append(row);
+
+  // Meta row: created / elapsed / Study.
+  // The two time spans carry their timestamp in a data attribute so the
+  // 60s tick can refresh their text without rebuilding the whole list.
+  const meta = document.createElement("div");
+  meta.className = "meta";
+
+  const created = document.createElement("span");
+  created.className = "created";
+  created.dataset.created = entry.createdAt;
+  created.textContent = createdLabel(entry);
+
+  const elapsed = document.createElement("span");
+  elapsed.className = "elapsed";
+  if (entry.studiedAt === null) elapsed.classList.add("never");
+  else elapsed.dataset.studied = entry.studiedAt;
+  elapsed.textContent = elapsedLabel(entry);
+
+  const study = document.createElement("button");
+  study.className = "study-btn";
+  study.type = "button";
+  study.textContent = "Study";
+  study.title = "Mark as studied now — resets the elapsed clock";
+
+  meta.append(created, elapsed, study);
+  card.append(row, meta);
   return card;
 }
 
@@ -287,6 +363,7 @@ listEl.addEventListener("click", (e) => {
   const id = card.dataset.id;
 
   if (e.target.closest(".level"))    return;   // the dropdown handles itself
+  if (e.target.closest(".study-btn")) return markStudied(id);
   if (e.target.closest(".del-btn"))  return deleteEntry(id);
   if (e.target.closest(".save-btn")) return saveEdit();
   if (card.classList.contains("editing")) return;
@@ -315,6 +392,21 @@ listEl.addEventListener("keydown", (e) => {
     saveEdit();
   }
 });
+
+// ---------- Tick ----------
+// Repaint just the time strings once a minute so a popup left open
+// doesn't freeze at the moment it was drawn. It rewrites text only —
+// no re-render — so an open editor keeps its cursor exactly where it is.
+function tickTimes() {
+  for (const el of listEl.querySelectorAll(".created")) {
+    el.textContent = `Created ${formatSpan(Date.now() - Number(el.dataset.created))} ago`;
+  }
+  for (const el of listEl.querySelectorAll(".elapsed[data-studied]")) {
+    el.textContent = `${formatSpan(Date.now() - Number(el.dataset.studied))} elapsed`;
+  }
+}
+
+setInterval(tickTimes, 60000);
 
 // ---------- Boot ----------
 // Load first, render second: no flash of "Nothing planned yet"
