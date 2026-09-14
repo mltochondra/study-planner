@@ -71,19 +71,26 @@
     }
 
 
-    /* ========== Entry cards ==========
-       Border colour encodes state: blue = resting, amber = being edited. */
+    /* ========== Bloom's Taxonomy palette ==========
+       Each card sets --accent (saturated, for the stripe) and
+       --accent-soft (lighter, for text on the navy background) as
+       inline custom properties. Everything below just reads them,
+       so adding a level never means touching these rules.            */
 
     .card {
       margin-bottom: 8px;
       padding: 10px 12px;
       background: #1d2939;
       border-radius: 8px;
-      border-left: 3px solid #7cd4fd;
+      border-left: 3px solid var(--accent, #7cd4fd);
       cursor: pointer;
     }
 
-    .card.editing { border-left-color: #fdb022; cursor: default; }
+    .card.editing { cursor: default; }
+
+    /* Amber "in progress" ring layered over the level colour, so you
+       can still see which level you're on while typing. */
+    .card.editing { box-shadow: inset 0 0 0 1px #fdb022; }
 
     .row { display: flex; align-items: flex-start; gap: 8px; }
     .row .q { flex: 1; }
@@ -112,6 +119,85 @@
     }
 
 
+    /* ========== Level dropdown ==========
+       appearance:none kills the OS widget so the control can match the
+       card; the wrapper's ::after draws our own chevron.               */
+
+    .level {
+      position: relative;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .level select {
+      appearance: none;
+      -webkit-appearance: none;
+      padding: 2px 20px 2px 8px;
+      font-family: inherit;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--accent-soft, #98a2b3);
+      background: #101828;
+      border: 1px solid var(--accent-soft, #344054);
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .level select:focus-visible { outline: 1px solid #f2f4f7; outline-offset: 1px; }
+
+    /* Option lists are painted by the OS, so give them explicit colours
+       instead of inheriting the transparent-looking ones above. */
+    .level option { color: #f2f4f7; background: #1d2939; }
+
+    .level::after {
+      content: "";
+      position: absolute;
+      right: 8px;
+      width: 0;
+      height: 0;
+      pointer-events: none;          /* the arrow must not eat clicks */
+      border-left: 3px solid transparent;
+      border-right: 3px solid transparent;
+      border-top: 4px solid var(--accent-soft, #98a2b3);
+    }
+
+
+    /* ========== Time meta row ==========
+       Two read-outs and the Study button. Times are recomputed from
+       stored timestamps on every render and on a 60s tick, so nothing
+       here is a counter that could drift.                              */
+
+    .meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+      font-size: 11px;
+      color: #667085;
+    }
+
+    .meta .elapsed { color: #98a2b3; }
+    .meta .elapsed.never { font-style: italic; color: #667085; }
+    .meta .study-btn { margin-left: auto; }   /* pushed right, no fixed widths */
+
+    .study-btn {
+      flex-shrink: 0;
+      padding: 3px 12px;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: 600;
+      color: #32d583;
+      background: #101828;
+      border: 1px solid #1a5c3a;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .study-btn:hover { background: #0d3a26; border-color: #32d583; }
+    .study-btn:active { transform: translateY(1px); }
+
+
     /* ========== Card controls ========== */
 
     .del-btn {
@@ -132,6 +218,14 @@
 
 
     /* ========== Edit mode ========== */
+
+    .edit-bar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
 
     .q-input {
       width: 100%;

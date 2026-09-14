@@ -1,22 +1,38 @@
 // ============================================================
-// Study Planner — popup.js (v0.3: saved to chrome.storage.local)
+// Study Planner — popup.js (v0.4: Bloom's Taxonomy levels)
 // ============================================================
 // STATE is the source of truth; render() projects it onto the DOM.
 // Every change to state is mirrored into chrome.storage.local, and
 // on open we load from storage BEFORE the first render.
 //
 // Storage keys (separate because they change at different speeds):
-//   entries -> [{ id, text }]   saved on add / save / delete
-//   draft   -> { id, text }     saved on every keystroke while editing
+//   entries -> [{ id, text, level }]  saved on add / save / delete / level
+//   draft   -> { id, text }           saved on every keystroke while editing
 //
 // The draft key is what makes this safe: a popup closes the instant
 // you click outside it, and there is no reliable "about to close"
-// event to save on. So we never wait for one. The draft is already
-// on disk, and reopening puts you back inside the card, mid-sentence.
+// event to save on. So we never wait for one.
 // ============================================================
 
+// ---------- Bloom's Taxonomy ----------
+// One table drives the dropdown, the colours, and the tooltips.
+// accent = saturated, for the card stripe.
+// soft   = lighter, because saturated red/green on navy is hard to read.
+const LEVELS = [
+  { id: "remember",   label: "Remember",   accent: "#f04438", soft: "#fda29b", blurb: "Retain and recall information" },
+  { id: "understand", label: "Understand", accent: "#f79009", soft: "#fdb022", blurb: "Grasp the meaning of something" },
+  { id: "apply",      label: "Apply",      accent: "#ffe600", soft: "#fde272", blurb: "Use existing knowledge in new contexts" },
+  { id: "analyze",    label: "Analyze",    accent: "#17b26a", soft: "#6ce9a6", blurb: "Explore relationships, causes, and connections" },
+  { id: "evaluate",   label: "Evaluate",   accent: "#29abe2", soft: "#7cd4fd", blurb: "Make judgments based on sound analysis" },
+  { id: "create",     label: "Create",     accent: "#6172f3", soft: "#a4bcfd", blurb: "Use existing information to make something new" },
+];
+
+const DEFAULT_LEVEL = "remember";
+const levelById = new Map(LEVELS.map((l) => [l.id, l]));
+const getLevel  = (id) => levelById.get(id) ?? levelById.get(DEFAULT_LEVEL);
+
 // ---------- State ----------
-const entries = [];      // [{ id: string, text: string }]
+const entries = [];      // [{ id: string, text: string, level: string }]
 let editingId = null;    // id of the card in edit mode, or null
 let draftText = "";      // live contents of the open editor
 
@@ -60,12 +76,19 @@ async function load() {
     console.error("Couldn't load entries:", err);
   }
 
-  // Never trust storage blindly: keep only well-formed entries,
-  // and drop blank cards unless they're the one being drafted.
+  // Never trust storage blindly: keep only well-formed entries, drop
+  // blank cards unless one is being drafted, and migrate entries saved
+  // before levels existed by defaulting them to Remember.
   if (Array.isArray(saved)) {
     for (const e of saved) {
       const wellFormed = e && typeof e.id === "string" && typeof e.text === "string";
-      if (wellFormed && (e.text !== "" || e.id === draft?.id)) entries.push(e);
+      if (!wellFormed) continue;
+      if (e.text === "" && e.id !== draft?.id) continue;
+      entries.push({
+        id: e.id,
+        text: e.text,
+        level: levelById.has(e.level) ? e.level : DEFAULT_LEVEL,
+      });
     }
   }
 
@@ -101,7 +124,7 @@ function commitEdit() {
 
 function addEntry() {
   commitEdit();
-  const entry = { id: crypto.randomUUID(), text: "" };
+  const entry = { id: crypto.randomUUID(), text: "", level: DEFAULT_LEVEL };
   entries.unshift(entry);              // newest on top, right under the + button
   editingId = entry.id;
   draftText = "";
@@ -132,12 +155,51 @@ function deleteEntry(id) {
   render();
 }
 
+// Changing the level must NOT commit the open draft — you should be
+// able to retag a card mid-sentence and keep typing.
+function setLevel(id, levelId) {
+  const entry = findEntry(id);
+  if (!entry || !levelById.has(levelId)) return;
+  entry.level = levelId;
+  saveEntries();
+  render();
+}
+
 // ---------- Render (state -> DOM) ----------
+
+function buildLevelPicker(entry) {
+  const wrap = document.createElement("span");
+  wrap.className = "level";
+
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", "Bloom's Taxonomy level");
+  select.title = getLevel(entry.level).blurb;
+
+  for (const level of LEVELS) {
+    const option = document.createElement("option");
+    option.value = level.id;
+    option.textContent = level.label;
+    select.append(option);
+  }
+  select.value = getLevel(entry.level).id;
+
+  wrap.append(select);
+  return wrap;
+}
+
+// The colours ride on the card as custom properties, so the CSS never
+// has to know the level names.
+function paint(card, entry) {
+  const level = getLevel(entry.level);
+  card.style.setProperty("--accent", level.accent);
+  card.style.setProperty("--accent-soft", level.soft);
+}
 
 function buildViewCard(entry) {
   const card = document.createElement("div");
   card.className = "card";
   card.dataset.id = entry.id;
+  paint(card, entry);
 
   const row = document.createElement("div");
   row.className = "row";
@@ -153,7 +215,7 @@ function buildViewCard(entry) {
   del.title = "Delete entry";
   del.setAttribute("aria-label", "Delete entry");
 
-  row.append(q, del);
+  row.append(q, buildLevelPicker(entry), del);
   card.append(row);
   return card;
 }
@@ -162,6 +224,13 @@ function buildEditCard(entry) {
   const card = document.createElement("div");
   card.className = "card editing";
   card.dataset.id = entry.id;
+  paint(card, entry);
+
+  // Level picker sits in its own bar above the textarea, so you can
+  // set the level on a brand-new card before it has any text.
+  const bar = document.createElement("div");
+  bar.className = "edit-bar";
+  bar.append(buildLevelPicker(entry));
 
   const input = document.createElement("textarea");
   input.className = "q-input";
@@ -178,7 +247,7 @@ function buildEditCard(entry) {
   save.type = "button";
   save.textContent = "Save";
 
-  card.append(input, hint, save);
+  card.append(bar, input, hint, save);
   return card;
 }
 
@@ -217,10 +286,17 @@ listEl.addEventListener("click", (e) => {
   if (!card) return;
   const id = card.dataset.id;
 
+  if (e.target.closest(".level"))    return;   // the dropdown handles itself
   if (e.target.closest(".del-btn"))  return deleteEntry(id);
   if (e.target.closest(".save-btn")) return saveEdit();
   if (card.classList.contains("editing")) return;
   startEdit(id);
+});
+
+listEl.addEventListener("change", (e) => {
+  if (!e.target.matches(".level select")) return;
+  const card = e.target.closest(".card");
+  if (card) setLevel(card.dataset.id, e.target.value);
 });
 
 // Every keystroke goes to state AND to disk. No re-render,
