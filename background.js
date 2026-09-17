@@ -109,16 +109,40 @@ async function sweepTabs() {
 // A service worker has no DOM, so it cannot play audio. An offscreen
 // document is a hidden page the worker can create purely to do DOM
 // things. It plays the tone, then closes itself.
+//
+// Chrome allows exactly ONE offscreen document per extension, and
+// creating it is async. Two overlapping calls can therefore both look,
+// both see nothing, and both try to create one — the second throws.
+// This promise guard makes the second caller wait on the FIRST call's
+// promise instead of starting its own.
+let creating = null;
+
+async function ensureOffscreen() {
+  const existing = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });
+  if (existing.length > 0) return;
+
+  if (creating) return creating;          // someone else is already making it
+
+  creating = chrome.offscreen
+    .createDocument({
+      url: "offscreen.html",
+      reasons: ["AUDIO_PLAYBACK"],
+      justification: "Play a chime when the study timer finishes.",
+    })
+    .catch((err) => {
+      // The document closing itself leaves a brief window where it is
+      // gone from getContexts but not yet gone from Chrome's bookkeeping.
+      // If that is what we hit, the document exists and we can just use it.
+      if (!String(err).includes("single offscreen document")) throw err;
+    })
+    .finally(() => { creating = null; });
+
+  return creating;
+}
+
 async function playChime() {
   try {
-    const existing = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });
-    if (existing.length === 0) {
-      await chrome.offscreen.createDocument({
-        url: "offscreen.html",
-        reasons: ["AUDIO_PLAYBACK"],
-        justification: "Play a chime when the study timer finishes.",
-      });
-    }
+    await ensureOffscreen();
     await chrome.runtime.sendMessage({ type: "play-chime" });
   } catch (err) {
     console.error("Couldn't play chime:", err);
@@ -168,13 +192,33 @@ async function startTimer(minutes) {
 }
 
 // finished=true means the clock ran out; false means the user stopped early.
-async function endTimer(finished) {
+//
+// DONE_ALARM and the one-minute TICK_ALARM can both notice the clock has
+// run out at nearly the same moment. A storage check alone does NOT fix
+// that: both would read "still running" before either had written the
+// removal, and you'd hear the chime twice. Async code needs a guard that
+// exists from the moment the first caller STARTS, not once it finishes —
+// so the second caller awaits the first one's promise and returns.
+let ending = null;
+
+function endTimer(finished) {
+  if (ending) return ending;
+  ending = finishTimer(finished).finally(() => { ending = null; });
+  return ending;
+}
+
+async function finishTimer(finished) {
+  // Also check storage, which covers the case where the worker was
+  // restarted between the two alarms and the in-memory guard was lost.
+  const timer = await getTimer();
+  const alreadyEnded = timer === null;
+
   await chrome.alarms.clear(DONE_ALARM);
   await chrome.alarms.clear(TICK_ALARM);
   await chrome.storage.local.remove("timer");
   await setBlocking(false);
   await refreshBadge();
-  if (finished) await playChime();
+  if (finished && !alreadyEnded) await playChime();
 }
 
 // Truth check, run on startup/install and whenever the worker wakes:

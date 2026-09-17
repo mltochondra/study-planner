@@ -12,6 +12,8 @@ const NOTES = [
   { freq: 1318.51, start: 0.28, length: 0.55 },
 ];
 
+let closeTimer = null;
+
 function chime() {
   const ctx = new AudioContext();
   const now = ctx.currentTime;
@@ -38,7 +40,10 @@ function chime() {
 
   // Close the page once the sound has finished; the worker will make a
   // fresh one next time. An idle offscreen document is wasted memory.
-  setTimeout(() => window.close(), 1500);
+  // Any queued close from a previous chime is cancelled first, so a
+  // second chime can't be cut off mid-note by the earlier timer.
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(() => window.close(), 1500);
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
