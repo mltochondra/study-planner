@@ -9,6 +9,7 @@
 //   entries -> [{ id, text, level, createdAt, studiedAt }]
 //                                    saved on add / save / delete / level / study
 //   draft   -> { id, text }           saved on every keystroke while editing
+//   timer   -> { endsAt, minutes }    owned by the service worker
 //
 // The draft key is what makes this safe: a popup closes the instant
 // you click outside it, and there is no reliable "about to close"
@@ -68,6 +69,11 @@ let draftText = "";      // live contents of the open editor
 const listEl    = document.getElementById("list");
 const headingEl = document.getElementById("heading");
 const addBtn    = document.getElementById("addBtn");
+const timerBar  = document.getElementById("timerBar");
+const minutesEl = document.getElementById("minutes");
+const startBtn  = document.getElementById("startBtn");
+const stopBtn   = document.getElementById("stopBtn");
+const countdown = document.getElementById("countdown");
 
 // ---------- Helpers ----------
 const findEntry   = (id) => entries.find((e) => e.id === id);
@@ -99,7 +105,10 @@ async function load() {
   let saved = [];
   let draft = null;
   try {
-    ({ entries: saved = [], draft = null } = await chrome.storage.local.get(["entries", "draft"]));
+    const got = await chrome.storage.local.get(["entries", "draft", "timer"]);
+    saved = got.entries ?? [];
+    draft = got.draft ?? null;
+    timerEndsAt = got.timer?.endsAt > Date.now() ? got.timer.endsAt : null;
   } catch (err) {
     console.error("Couldn't load entries:", err);
   }
@@ -393,6 +402,66 @@ listEl.addEventListener("keydown", (e) => {
   }
 });
 
+// ---------- Timer ----------
+// The popup never owns the timer; the service worker does, because
+// alarms and site blocking have to keep working with this window shut.
+// Here we only send two commands and draw the remaining time, which is
+// endsAt minus now — the same timestamp trick as the elapsed clocks.
+
+let timerEndsAt = null;   // ms, or null when idle
+
+function drawTimer() {
+  const left = timerEndsAt === null ? 0 : timerEndsAt - Date.now();
+
+  if (left <= 0) {
+    timerEndsAt = null;
+    timerBar.classList.remove("running");
+    return;
+  }
+
+  timerBar.classList.add("running");
+  const total = Math.ceil(left / 1000);
+  const mm = String(Math.floor(total / 60)).padStart(2, "0");
+  const ss = String(total % 60).padStart(2, "0");
+  countdown.textContent = `${mm}:${ss}`;
+}
+
+async function startTimer() {
+  const minutes = Math.min(180, Math.max(1, Math.round(Number(minutesEl.value) || 25)));
+  minutesEl.value = minutes;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "start-timer", minutes });
+    timerEndsAt = res?.endsAt ?? Date.now() + minutes * 60000;
+  } catch (err) {
+    console.error("Couldn't start timer:", err);
+  }
+  drawTimer();
+}
+
+async function stopTimer() {
+  try {
+    await chrome.runtime.sendMessage({ type: "stop-timer" });
+  } catch (err) {
+    console.error("Couldn't stop timer:", err);
+  }
+  timerEndsAt = null;
+  drawTimer();
+}
+
+startBtn.addEventListener("click", startTimer);
+stopBtn.addEventListener("click", stopTimer);
+
+// Redraw every second while open. The countdown is derived, never
+// decremented, so a popup reopened 10 minutes later is instantly correct.
+setInterval(drawTimer, 1000);
+
+// If the worker ends the timer while the popup sits open, storage tells us.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.timer) return;
+  timerEndsAt = changes.timer.newValue?.endsAt ?? null;
+  drawTimer();
+});
+
 // ---------- Tick ----------
 // Repaint just the time strings once a minute so a popup left open
 // doesn't freeze at the moment it was drawn. It rewrites text only —
@@ -415,4 +484,5 @@ addBtn.disabled = true;
 load().then(() => {
   addBtn.disabled = false;
   render();
+  drawTimer();
 });

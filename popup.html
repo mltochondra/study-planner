@@ -71,6 +71,66 @@
     }
 
 
+    /* ========== Timer bar ==========
+       Two states swapped by the .running class on #timerBar: idle shows
+       the duration picker, running shows the countdown and Stop.        */
+
+    #timerBar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      margin-bottom: 10px;
+      padding: 8px 10px;
+      background: #1d2939;
+      border-radius: 6px;
+      border-left: 3px solid #344054;
+    }
+
+    #timerBar.running { border-left-color: #32d583; }
+
+    #timerBar .label { font-size: 11px; font-weight: 600; color: #98a2b3; }
+
+    #minutes {
+      width: 56px;
+      padding: 5px 6px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      color: #f2f4f7;
+      background: #101828;
+      border: 1px solid #344054;
+      border-radius: 6px;
+    }
+
+    #minutes:focus { outline: none; border-color: #7cd4fd; }
+
+    #countdown {
+      font-size: 20px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;   /* digits stop jittering as they change */
+      color: #32d583;
+      letter-spacing: 0.02em;
+    }
+
+    #blockNote {
+      margin-left: auto;
+      font-size: 10px;
+      color: #667085;
+    }
+
+    #startBtn { color: #32d583; border-color: #1a5c3a; }
+    #startBtn:hover:not(:disabled) { background: #0d3a26; }
+
+    #stopBtn { margin-left: 8px; color: #fda29b; border-color: #7a271a; }
+    #stopBtn:hover { background: #55160c; }
+
+    /* Idle hides the running half, and vice versa. One class, no
+       element-by-element toggling in JS. */
+    #timerBar:not(.running) .when-running { display: none; }
+    #timerBar.running .when-idle { display: none; }
+
+
     /* ========== Bloom's Taxonomy palette ==========
        Each card sets --accent (saturated, for the stripe) and
        --accent-soft (lighter, for text on the navy background) as
@@ -265,6 +325,19 @@
     <button id="addBtn" class="tool-btn add" type="button"
             title="Add entry" aria-label="Add entry">+</button>
   </header>
+
+  <div id="timerBar">
+    <span class="label when-idle">Focus for</span>
+    <input id="minutes" class="when-idle" type="number" min="1" max="180" step="1"
+           value="25" aria-label="Timer duration in minutes">
+    <span class="label when-idle">min</span>
+    <button id="startBtn" class="tool-btn when-idle" type="button">Start</button>
+    <span class="when-idle" id="blockNote">blocks 14 sites while running</span>
+
+    <span id="countdown" class="when-running">00:00</span>
+    <span class="label when-running" id="runNote">distractions blocked</span>
+    <button id="stopBtn" class="tool-btn when-running" type="button">Stop</button>
+  </div>
 
   <div id="list"></div>
 

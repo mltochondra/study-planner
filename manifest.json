@@ -1,14 +1,39 @@
 {
   "manifest_version": 3,
   "name": "Study Planner",
-  "version": "1.1",
-  "description": "Study Aggressively ",
-  "permissions": ["storage"],
+  "version": "0.5.1",
+  "description": "Plan what to study, tag it by Bloom's level, and block the noise while you work.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "offscreen",
+    "declarativeNetRequest",
+    "tabs"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_popup": "popup.html",
     "default_title": "Study Planner"
-  }
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "blocklist",
+        "enabled": false,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "blocked.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
 }
