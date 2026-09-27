@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Study Planner",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Plan what to study, tag it by Bloom's level, and block the noise while you work.",
   "permissions": [
     "storage",
@@ -11,20 +11,12 @@
     "tabs"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "action": {
     "default_popup": "popup.html",
     "default_title": "Study Planner"
-  },
-  "declarative_net_request": {
-    "rule_resources": [
-      {
-        "id": "blocklist",
-        "enabled": false,
-        "path": "rules.json"
-      }
-    ]
   },
   "web_accessible_resources": [
     {

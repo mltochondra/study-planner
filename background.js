@@ -17,37 +17,14 @@
 // listeners that were attached on startup.
 // ============================================================
 
+import { getBlocklist, isBlockedUrl } from "./domains.js";
+
 const BADGE_BG    = "#7cd4fd";   // card-stripe blue
 const BADGE_TEXT  = "#101828";   // popup navy
-const TIMER_BG    = "#32d583";   // Study-button green, so a running timer looks different
-const RULESET_ID  = "blocklist";
+const TIMER_BG    = "#32d583";   // Split-button green, so a running timer looks different
+const RULE_ID     = 1;   // one dynamic rule holds every blocked domain
 const DONE_ALARM  = "timer-done";
 const TICK_ALARM  = "timer-tick";
-
-// ---------- Blocked domains ----------
-// Mirrors rules.json for now. declarativeNetRequest can only stop
-// requests that actually hit the network; this list powers the second
-// layer below, which watches tabs instead. When the editable
-// whitelist/blacklist lands, both layers will read one dynamic source.
-const BLOCKED_DOMAINS = [
-  "youtube.com", "instagram.com", "tiktok.com", "x.com", "twitter.com",
-  "facebook.com", "reddit.com", "netflix.com", "twitch.tv", "discord.com",
-  "snapchat.com", "pinterest.com", "9gag.com", "chess.com",
-];
-
-// Matches the domain and its subdomains (www.youtube.com, m.youtube.com),
-// but never a lookalike like notyoutube.com — hence the dot check.
-function isBlockedUrl(url) {
-  let host;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-    host = parsed.hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  return BLOCKED_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`));
-}
 
 // ---------- Timer state ----------
 // Stored as a TIMESTAMP, same principle as the elapsed clocks: the
@@ -59,16 +36,29 @@ const getTimer = async () => (await chrome.storage.local.get("timer")).timer ?? 
 
 const isRunning = (timer) => timer !== null && timer.endsAt > Date.now();
 
-// ---------- Blocking ----------
-// Enable/disable the whole static ruleset. Enabled state PERSISTS across
-// browser restarts, so it must be re-synced on startup — otherwise a
-// crash mid-session could leave you locked out of YouTube forever.
-// Funny for about four minutes, then not.
+// ---------- Blocking (layer 1: the network) ----------
+// Static rulesets can only be turned on and off; their contents are
+// fixed at build time. A user-editable list needs DYNAMIC rules, which
+// we write at runtime. One rule carries every domain, so switching
+// blocking on or off is a single add or remove.
 async function setBlocking(on) {
   try {
-    await chrome.declarativeNetRequest.updateEnabledRulesets(
-      on ? { enableRulesetIds: [RULESET_ID] } : { disableRulesetIds: [RULESET_ID] }
-    );
+    // Always clear first. Adding a rule id that already exists throws,
+    // and "remove then add" is also how we rebuild after an edit.
+    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [RULE_ID] });
+    if (!on) return;
+
+    const domains = await getBlocklist();
+    if (domains.length === 0) return;   // an empty list blocks nothing
+
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      addRules: [{
+        id: RULE_ID,
+        priority: 1,
+        action: { type: "block" },
+        condition: { requestDomains: domains, resourceTypes: ["main_frame"] },
+      }],
+    });
   } catch (err) {
     console.error("Couldn't toggle blocking:", err);
   }
@@ -81,8 +71,8 @@ async function setBlocking(on) {
 // at all — nothing for the rule to block. Same story for back/forward
 // cache and restored tabs. So we also watch tab URLs, which change no
 // matter where the page came from.
-async function enforceTab(tabId, url) {
-  if (!isBlockedUrl(url)) return;
+async function enforceTab(tabId, url, domains) {
+  if (!isBlockedUrl(url, domains)) return;
   try {
     await chrome.tabs.update(tabId, {
       url: chrome.runtime.getURL(`blocked.html?from=${encodeURIComponent(url)}`),
@@ -96,9 +86,10 @@ async function enforceTab(tabId, url) {
 // don't fire a navigation event, so sweep them once up front.
 async function sweepTabs() {
   try {
+    const domains = await getBlocklist();
     const tabs = await chrome.tabs.query({});
     for (const tab of tabs) {
-      if (tab.id !== undefined && tab.url) await enforceTab(tab.id, tab.url);
+      if (tab.id !== undefined && tab.url) await enforceTab(tab.id, tab.url, domains);
     }
   } catch (err) {
     console.error("Couldn't sweep tabs:", err);
@@ -239,7 +230,10 @@ async function syncTimer() {
 
 // ---------- Listeners (all registered at top level) ----------
 
-chrome.runtime.onInstalled.addListener(syncTimer);
+chrome.runtime.onInstalled.addListener(async () => {
+  await getBlocklist();   // seeds the default list on first install
+  await syncTimer();
+});
 chrome.runtime.onStartup.addListener(syncTimer);
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -259,7 +253,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const url = changeInfo.url ?? (changeInfo.status === "loading" ? tab.url : null);
   if (!url) return;
   const timer = await getTimer();
-  if (isRunning(timer)) await enforceTab(tabId, url);
+  if (!isRunning(timer)) return;
+  await enforceTab(tabId, url, await getBlocklist());
 });
 
 // The popup asks the worker to start/stop, because only the worker
@@ -277,6 +272,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // Entry edits still reach the badge through storage, no messaging needed.
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && (changes.entries || changes.timer)) refreshBadge();
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== "local") return;
+  if (changes.entries || changes.timer) refreshBadge();
+
+  // Edited the blocklist while a timer is running? Rebuild the network
+  // rule now, rather than leaving the old one in force until the next
+  // session. The tab layer needs no such nudge — it reads storage on
+  // every navigation.
+  if (changes.blocklist) {
+    const timer = await getTimer();
+    if (isRunning(timer)) {
+      await setBlocking(true);
+      // ...and bounce anything already open on a site you just added.
+      // Without this, blocking a site mid-session leaves the tab you
+      // were looking at sitting there, which reads as "it didn't work".
+      await sweepTabs();
+    }
+  }
 });

@@ -1,5 +1,5 @@
 // ============================================================
-// Study Planner — popup.js (v1.3: priority ranks + sorting)
+// Study Planner — popup.js (v1.4: editable blocklist)
 // ============================================================
 // STATE is the source of truth; render() projects it onto the DOM.
 // Every change to state is mirrored into chrome.storage.local, and
@@ -10,6 +10,7 @@
 //                                    saved on add / save / delete / level / split
 //   draft   -> { id, text, priority } saved on every keystroke while editing
 //   timer   -> { endsAt, minutes }    owned by the service worker
+//   blocklist -> ["youtube.com", ...]  edited here, enforced by the worker
 //
 // The draft key is what makes this safe: a popup closes the instant
 // you click outside it, and there is no reliable "about to close"
@@ -32,6 +33,12 @@ const LEVELS = [
 const DEFAULT_LEVEL = "remember";
 const levelById = new Map(LEVELS.map((l) => [l.id, l]));
 const getLevel  = (id) => levelById.get(id) ?? levelById.get(DEFAULT_LEVEL);
+
+import {
+  normalizeDomain,
+  getBlocklist,
+  saveBlocklist,
+} from "./domains.js";
 
 // ---------- Priority ----------
 // Rank drives the sort order: lower rank floats to the top.
@@ -99,6 +106,14 @@ const minutesEl = document.getElementById("minutes");
 const startBtn  = document.getElementById("startBtn");
 const stopBtn   = document.getElementById("stopBtn");
 const countdown = document.getElementById("countdown");
+const gearBtn   = document.getElementById("gearBtn");
+const settingsEl   = document.getElementById("settings");
+const siteInput    = document.getElementById("siteInput");
+const addSiteBtn   = document.getElementById("addSiteBtn");
+const addCurrentBtn = document.getElementById("addCurrentBtn");
+const siteStatus   = document.getElementById("siteStatus");
+const siteListEl   = document.getElementById("siteList");
+const blockNote    = document.getElementById("blockNote");
 
 // ---------- Helpers ----------
 const findEntry   = (id) => entries.find((e) => e.id === id);
@@ -561,6 +576,124 @@ chrome.storage.onChanged.addListener((changes, area) => {
   drawTimer();
 });
 
+// ---------- Blocked sites ----------
+// The list itself lives in storage and is shared with the service worker
+// through domains.js. This half is only the editor.
+
+let blocklist = [];
+
+function setStatus(text, tone = "") {
+  siteStatus.textContent = text;
+  siteStatus.className = `status ${tone}`;
+}
+
+function renderSites() {
+  siteListEl.replaceChildren();
+
+  if (blocklist.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "Nothing blocked. Add a site above, and timers will keep you off it.";
+    siteListEl.append(empty);
+  }
+
+  for (const domain of blocklist) {
+    const row = document.createElement("div");
+    row.className = "site";
+    row.dataset.domain = domain;
+
+    const name = document.createElement("span");
+    name.textContent = domain;        // textContent: the user typed this
+
+    const del = document.createElement("button");
+    del.className = "del-btn";
+    del.type = "button";
+    del.textContent = "×";
+    del.title = `Stop blocking ${domain}`;
+    del.setAttribute("aria-label", `Stop blocking ${domain}`);
+
+    row.append(name, del);
+    siteListEl.append(row);
+  }
+
+  blockNote.textContent =
+    blocklist.length === 0
+      ? "nothing blocked yet"
+      : `blocks ${blocklist.length} site${blocklist.length === 1 ? "" : "s"} while running`;
+}
+
+async function commitSites(next, message, tone) {
+  blocklist = await saveBlocklist(next);   // sorts and de-duplicates
+  renderSites();
+  setStatus(message, tone);
+}
+
+// Everything the user types goes through normalizeDomain, so "youtube.com",
+// "www.youtube.com" and a pasted watch URL all land as the same entry.
+async function addSite(raw, { from = "typed" } = {}) {
+  const domain = normalizeDomain(raw);
+
+  if (!domain) {
+    setStatus(
+      from === "tab"
+        ? "That tab isn't a normal website — nothing to block."
+        : `"${raw.trim()}" doesn't look like a web address.`,
+      "bad",
+    );
+    return;
+  }
+  if (blocklist.includes(domain)) {
+    setStatus(`${domain} is already on the list.`, "");
+    return;
+  }
+
+  await commitSites([...blocklist, domain], `Blocking ${domain}.`, "good");
+  siteInput.value = "";
+}
+
+async function addCurrentSite() {
+  try {
+    // lastFocusedWindow, not currentWindow: the popup itself can count as
+    // the current window, and then we'd read the wrong tab.
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.url) return setStatus("Couldn't read the current tab.", "bad");
+    await addSite(tab.url, { from: "tab" });
+  } catch (err) {
+    console.error("Couldn't read the current tab:", err);
+    setStatus("Couldn't read the current tab.", "bad");
+  }
+}
+
+async function removeSite(domain) {
+  await commitSites(blocklist.filter((d) => d !== domain), `${domain} unblocked.`, "");
+}
+
+function showSettings(on) {
+  document.body.classList.toggle("in-settings", on);
+  settingsEl.hidden = !on;
+  headingEl.textContent = on ? "Blocked sites" : "Study planner";
+  if (on) {
+    setStatus("");
+    renderSites();
+    siteInput.focus();
+  } else {
+    render();            // repaint the planner heading and list
+  }
+}
+
+gearBtn.addEventListener("click", () => showSettings(!document.body.classList.contains("in-settings")));
+addSiteBtn.addEventListener("click", () => addSite(siteInput.value));
+addCurrentBtn.addEventListener("click", addCurrentSite);
+
+siteInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.isComposing) addSite(siteInput.value);
+});
+
+siteListEl.addEventListener("click", (e) => {
+  const row = e.target.closest(".site");
+  if (row && e.target.closest(".del-btn")) removeSite(row.dataset.domain);
+});
+
 // ---------- Tick ----------
 // Repaint just the time strings once a minute so a popup left open
 // doesn't freeze at the moment it was drawn. It rewrites text only —
@@ -580,8 +713,10 @@ setInterval(tickTimes, 60000);
 // Load first, render second: no flash of "Nothing planned yet"
 // while storage is still answering.
 addBtn.disabled = true;
-load().then(() => {
+load().then(async () => {
   addBtn.disabled = false;
   render();
   drawTimer();
+  blocklist = await getBlocklist();
+  renderSites();               // fills in the "blocks N sites" note
 });
