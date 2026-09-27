@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Study Planner",
-  "version": "0.5.1",
+  "version": "1.3.0",
   "description": "Plan what to study, tag it by Bloom's level, and block the noise while you work.",
   "permissions": [
     "storage",

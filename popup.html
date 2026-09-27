@@ -142,7 +142,7 @@
       padding: 10px 12px;
       background: #1d2939;
       border-radius: 8px;
-      border-left: 3px solid var(--accent, #7cd4fd);
+      border-left: var(--stripe, 3px) solid var(--accent, #7cd4fd);
       cursor: pointer;
     }
 
@@ -179,38 +179,39 @@
     }
 
 
-    /* ========== Level dropdown ==========
+    /* ========== Dropdowns ==========
+       One shared shell for the Bloom picker and the priority picker.
        appearance:none kills the OS widget so the control can match the
        card; the wrapper's ::after draws our own chevron.               */
 
-    .level {
+    .picker {
       position: relative;
       flex-shrink: 0;
       display: inline-flex;
       align-items: center;
     }
 
-    .level select {
+    .picker select {
       appearance: none;
       -webkit-appearance: none;
       padding: 2px 20px 2px 8px;
       font-family: inherit;
       font-size: 10px;
       font-weight: 600;
-      color: var(--accent-soft, #98a2b3);
+      color: #98a2b3;
       background: #101828;
-      border: 1px solid var(--accent-soft, #344054);
+      border: 1px solid #344054;
       border-radius: 10px;
       cursor: pointer;
     }
 
-    .level select:focus-visible { outline: 1px solid #f2f4f7; outline-offset: 1px; }
+    .picker select:focus-visible { outline: 1px solid #f2f4f7; outline-offset: 1px; }
 
     /* Option lists are painted by the OS, so give them explicit colours
        instead of inheriting the transparent-looking ones above. */
-    .level option { color: #f2f4f7; background: #1d2939; }
+    .picker option { color: #f2f4f7; background: #1d2939; }
 
-    .level::after {
+    .picker::after {
       content: "";
       position: absolute;
       right: 8px;
@@ -219,12 +220,34 @@
       pointer-events: none;          /* the arrow must not eat clicks */
       border-left: 3px solid transparent;
       border-right: 3px solid transparent;
-      border-top: 4px solid var(--accent-soft, #98a2b3);
+      border-top: 4px solid #98a2b3;
     }
+
+    /* Only the Bloom picker takes the level colour. The priority picker
+       stays neutral grey on purpose — one palette per card. */
+    .picker.level select { color: var(--accent-soft, #98a2b3); border-color: var(--accent-soft, #344054); }
+    .picker.level::after { border-top-color: var(--accent-soft, #98a2b3); }
+
+
+    /* ========== Priority group headers ==========
+       The sort already puts Lethal on top; these just name the bands so
+       the order is readable instead of merely true.                    */
+
+    .group {
+      margin: 2px 0 6px 3px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: #667085;
+    }
+
+    .group + .card { margin-top: 0; }
+    .group.lethal { color: #98a2b3; }
+    .group:not(:first-child) { margin-top: 12px; }
 
 
     /* ========== Time meta row ==========
-       Two read-outs and the Study button. Times are recomputed from
+       Two read-outs and the Split button. Times are recomputed from
        stored timestamps on every render and on a 60s tick, so nothing
        here is a counter that could drift.                              */
 

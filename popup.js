@@ -1,14 +1,14 @@
 // ============================================================
-// Study Planner — popup.js (v0.4: Bloom's Taxonomy levels)
+// Study Planner — popup.js (v1.3: priority ranks + sorting)
 // ============================================================
 // STATE is the source of truth; render() projects it onto the DOM.
 // Every change to state is mirrored into chrome.storage.local, and
 // on open we load from storage BEFORE the first render.
 //
 // Storage keys (separate because they change at different speeds):
-//   entries -> [{ id, text, level, createdAt, studiedAt }]
-//                                    saved on add / save / delete / level / study
-//   draft   -> { id, text }           saved on every keystroke while editing
+//   entries -> [{ id, text, level, priority, createdAt, studiedAt }]
+//                                    saved on add / save / delete / level / split
+//   draft   -> { id, text, priority } saved on every keystroke while editing
 //   timer   -> { endsAt, minutes }    owned by the service worker
 //
 // The draft key is what makes this safe: a popup closes the instant
@@ -32,6 +32,30 @@ const LEVELS = [
 const DEFAULT_LEVEL = "remember";
 const levelById = new Map(LEVELS.map((l) => [l.id, l]));
 const getLevel  = (id) => levelById.get(id) ?? levelById.get(DEFAULT_LEVEL);
+
+// ---------- Priority ----------
+// Rank drives the sort order: lower rank floats to the top.
+// Deliberately NO colour here. Bloom already owns every hue on the card,
+// so a second palette would just fight it. Priority gets the two channels
+// Bloom isn't using: vertical position, and how thick the stripe is.
+const PRIORITIES = [
+  { id: "lethal",    label: "Lethal",    rank: 0, stripe: "6px", blurb: "Do this or something breaks" },
+  { id: "necessary", label: "Necessary", rank: 1, stripe: "3px", blurb: "Has to happen, but not today" },
+  { id: "todo",      label: "To Do",     rank: 2, stripe: "1px", blurb: "Worth doing when there's room" },
+];
+
+// New entries start Necessary, not To Do: a brand-new card would
+// otherwise be born at the very bottom of the list, below everything
+// you already wrote. Necessary is the honest neutral — you promote to
+// Lethal or demote to To Do from there. One constant to change.
+const DEFAULT_PRIORITY = "necessary";
+const prioById = new Map(PRIORITIES.map((p) => [p.id, p]));
+const getPriority = (id) => prioById.get(id) ?? prioById.get(DEFAULT_PRIORITY);
+
+// Sorts a COPY, and Array.sort is stable, so entries of equal priority
+// keep the order they already had — newest first, as before.
+const sortedEntries = () =>
+  [...entries].sort((a, b) => getPriority(a.priority).rank - getPriority(b.priority).rank);
 
 // ---------- Time ----------
 // We store TIMESTAMPS (a moment), never elapsed counters (a duration).
@@ -61,9 +85,10 @@ const elapsedLabel = (entry) =>
     : `${formatSpan(Date.now() - entry.studiedAt)} elapsed`;
 
 // ---------- State ----------
-const entries = [];      // [{ id: string, text: string, level: string }]
+const entries = [];      // see the storage shape at the top of this file
 let editingId = null;    // id of the card in edit mode, or null
 let draftText = "";      // live contents of the open editor
+let draftPriority = DEFAULT_PRIORITY;   // priority being edited, not yet committed
 
 // ---------- DOM references ----------
 const listEl    = document.getElementById("list");
@@ -95,7 +120,9 @@ async function saveEntries() {
 async function saveDraft() {
   try {
     if (editingId === null) await chrome.storage.local.remove("draft");
-    else await chrome.storage.local.set({ draft: { id: editingId, text: draftText } });
+    else await chrome.storage.local.set({
+      draft: { id: editingId, text: draftText, priority: draftPriority },
+    });
   } catch (err) {
     console.error("Couldn't save draft:", err);
   }
@@ -125,6 +152,10 @@ async function load() {
         id: e.id,
         text: e.text,
         level: levelById.has(e.level) ? e.level : DEFAULT_LEVEL,
+        // Entries saved before priorities existed all become Necessary.
+        // Because they land on one rank and the sort is stable, upgrading
+        // rearranges nothing — the list you had is the list you get.
+        priority: prioById.has(e.priority) ? e.priority : DEFAULT_PRIORITY,
         // Entries saved before timestamps existed get "now" as their
         // birthday. It's a lie, but it's the only honest guess available,
         // and it beats rendering "NaNd NaNh ago".
@@ -135,9 +166,11 @@ async function load() {
   }
 
   // Reopen the editor exactly where you left it
-  if (draft && typeof draft.text === "string" && findEntry(draft.id)) {
+  const drafted = draft && typeof draft.text === "string" ? findEntry(draft.id) : null;
+  if (drafted) {
     editingId = draft.id;
     draftText = draft.text;
+    draftPriority = prioById.has(draft.priority) ? draft.priority : drafted.priority;
   }
 }
 
@@ -156,10 +189,15 @@ function commitEdit() {
   if (entry) {
     if (text !== "")            entry.text = text;
     else if (entry.text === "") removeEntry(entry.id);
+    // Priority is a separate field, so it lands even when the text was
+    // left blank and reverted. This is the moment the card changes rank
+    // and moves — never mid-sentence.
+    if (findEntry(entry.id)) entry.priority = draftPriority;
   }
 
   editingId = null;
   draftText = "";
+  draftPriority = DEFAULT_PRIORITY;
   saveEntries();
   saveDraft();
 }
@@ -170,12 +208,14 @@ function addEntry() {
     id: crypto.randomUUID(),
     text: "",
     level: DEFAULT_LEVEL,
+    priority: DEFAULT_PRIORITY,
     createdAt: Date.now(),
     studiedAt: null,
   };
-  entries.unshift(entry);              // newest on top, right under the + button
+  entries.unshift(entry);              // newest first within its rank
   editingId = entry.id;
   draftText = "";
+  draftPriority = DEFAULT_PRIORITY;
   saveEntries();
   saveDraft();
   render();
@@ -187,6 +227,7 @@ function startEdit(id) {
   if (!entry) return render();
   editingId = id;
   draftText = entry.text;
+  draftPriority = entry.priority;
   saveDraft();
   render();
 }
@@ -213,7 +254,18 @@ function setLevel(id, levelId) {
   render();
 }
 
-// Deliberately manual: pressing Study stamps "now" and the elapsed
+// Priority is edited into the DRAFT, exactly like the text, and only
+// written to the entry on commit. That is what keeps the list from
+// rearranging itself under your cursor: the sort reads entry.priority,
+// which cannot change while the editor is open.
+function setDraftPriority(priorityId) {
+  if (!prioById.has(priorityId)) return;
+  draftPriority = priorityId;
+  saveDraft();
+  render();
+}
+
+// Deliberately manual: pressing Split stamps "now" and the elapsed
 // read-out restarts from zero. No scheduler, no due dates, no nagging —
 // you look at the number and decide. Like setLevel, this does not
 // commit the open draft.
@@ -227,25 +279,46 @@ function markStudied(id) {
 
 // ---------- Render (state -> DOM) ----------
 
-function buildLevelPicker(entry) {
+// One builder for both dropdowns. They differ only in their option
+// table, their current value and their label — everything visual is the
+// shared .picker class plus a modifier.
+function buildPicker({ kind, options, value, ariaLabel }) {
   const wrap = document.createElement("span");
-  wrap.className = "level";
+  wrap.className = `picker ${kind}`;
 
   const select = document.createElement("select");
-  select.setAttribute("aria-label", "Bloom's Taxonomy level");
-  select.title = getLevel(entry.level).blurb;
+  select.setAttribute("aria-label", ariaLabel);
 
-  for (const level of LEVELS) {
+  for (const opt of options) {
     const option = document.createElement("option");
-    option.value = level.id;
-    option.textContent = level.label;
+    option.value = opt.id;
+    option.textContent = opt.label;
+    option.title = opt.blurb;
     select.append(option);
   }
-  select.value = getLevel(entry.level).id;
+  select.value = value;
+  select.title = options.find((o) => o.id === value)?.blurb ?? "";
 
   wrap.append(select);
   return wrap;
 }
+
+const buildLevelPicker = (entry) =>
+  buildPicker({
+    kind: "level",
+    options: LEVELS,
+    value: getLevel(entry.level).id,
+    ariaLabel: "Bloom's Taxonomy level",
+  });
+
+// Only ever built inside the edit card — the view card is already busy.
+const buildPriorityPicker = () =>
+  buildPicker({
+    kind: "prio",
+    options: PRIORITIES,
+    value: getPriority(draftPriority).id,
+    ariaLabel: "Priority rank",
+  });
 
 // The colours ride on the card as custom properties, so the CSS never
 // has to know the level names.
@@ -253,6 +326,9 @@ function paint(card, entry) {
   const level = getLevel(entry.level);
   card.style.setProperty("--accent", level.accent);
   card.style.setProperty("--accent-soft", level.soft);
+  // Bloom picks the stripe's colour, priority picks its thickness.
+  // Two independent facts, one element, no extra pixels.
+  card.style.setProperty("--stripe", getPriority(entry.priority).stripe);
 }
 
 function buildViewCard(entry) {
@@ -277,7 +353,9 @@ function buildViewCard(entry) {
 
   row.append(q, buildLevelPicker(entry), del);
 
-  // Meta row: created / elapsed / Study.
+  // Meta row: created / elapsed / Split.
+  // (The button's class and the studiedAt key keep their old names on
+  // purpose: renaming the storage key would orphan every saved split.)
   // The two time spans carry their timestamp in a data attribute so the
   // 60s tick can refresh their text without rebuilding the whole list.
   const meta = document.createElement("div");
@@ -297,8 +375,8 @@ function buildViewCard(entry) {
   const study = document.createElement("button");
   study.className = "study-btn";
   study.type = "button";
-  study.textContent = "Study";
-  study.title = "Mark as studied now — resets the elapsed clock";
+  study.textContent = "Split";
+  study.title = "Split: mark the lap and restart the elapsed clock";
 
   meta.append(created, elapsed, study);
   card.append(row, meta);
@@ -310,12 +388,17 @@ function buildEditCard(entry) {
   card.className = "card editing";
   card.dataset.id = entry.id;
   paint(card, entry);
+  // The card doesn't move until you save, but the stripe thickens right
+  // away, so the choice isn't invisible until then.
+  card.style.setProperty("--stripe", getPriority(draftPriority).stripe);
 
-  // Level picker sits in its own bar above the textarea, so you can
-  // set the level on a brand-new card before it has any text.
+  // Both pickers sit in a bar above the textarea, so you can set them
+  // on a brand-new card before it has any text. Priority lives here and
+  // nowhere else: the view card has no room left, and rank is a decision
+  // worth making while you are already thinking about the entry.
   const bar = document.createElement("div");
   bar.className = "edit-bar";
-  bar.append(buildLevelPicker(entry));
+  bar.append(buildPriorityPicker(), buildLevelPicker(entry));
 
   const input = document.createElement("textarea");
   input.className = "q-input";
@@ -346,7 +429,22 @@ function render() {
     listEl.append(empty);
   }
 
-  for (const entry of entries) {
+  // Walk the sorted copy and drop a small header in whenever the rank
+  // changes. Because the list is sorted, each rank appears exactly once,
+  // so this needs no grouping pass — just "did it change since the last
+  // card?".
+  let lastPriority = null;
+  const sorted = sortedEntries();
+
+  for (const entry of sorted) {
+    const prio = getPriority(entry.priority);
+    if (prio.id !== lastPriority) {
+      const head = document.createElement("div");
+      head.className = `group ${prio.id}`;
+      head.textContent = `${prio.label} · ${sorted.filter((e) => getPriority(e.priority).id === prio.id).length}`;
+      listEl.append(head);
+      lastPriority = prio.id;
+    }
     listEl.append(entry.id === editingId ? buildEditCard(entry) : buildViewCard(entry));
   }
 
@@ -371,7 +469,7 @@ listEl.addEventListener("click", (e) => {
   if (!card) return;
   const id = card.dataset.id;
 
-  if (e.target.closest(".level"))    return;   // the dropdown handles itself
+  if (e.target.closest(".picker"))   return;   // the dropdowns handle themselves
   if (e.target.closest(".study-btn")) return markStudied(id);
   if (e.target.closest(".del-btn"))  return deleteEntry(id);
   if (e.target.closest(".save-btn")) return saveEdit();
@@ -380,9 +478,10 @@ listEl.addEventListener("click", (e) => {
 });
 
 listEl.addEventListener("change", (e) => {
-  if (!e.target.matches(".level select")) return;
   const card = e.target.closest(".card");
-  if (card) setLevel(card.dataset.id, e.target.value);
+  if (!card) return;
+  if (e.target.matches(".picker.level select")) return setLevel(card.dataset.id, e.target.value);
+  if (e.target.matches(".picker.prio select"))  return setDraftPriority(e.target.value);
 });
 
 // Every keystroke goes to state AND to disk. No re-render,
